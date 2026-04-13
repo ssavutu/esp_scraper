@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local Firecrawl env/secrets
+.env.firecrawl
+
+# Local session/output artifacts
+cookies.json
+firecrawl_output/
+
+# Local tool metadata
+.codex
