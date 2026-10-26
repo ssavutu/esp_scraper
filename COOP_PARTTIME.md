@@ -34,9 +34,12 @@ python coop_parttime.py
 5. It clicks "Next" through the results on its own. If it can't find the Next
    button, it asks you to go to the next page yourself and press ENTER; type
    `done` after the last page.
-6. It then opens every posting, one by one. Leave the window alone until it
-   finishes. If your login expires partway through, it pauses, so log in again
-   and press ENTER.
+6. It then opens every posting, one by one, about one every 3-4 seconds (Banner
+   logs you out if it goes faster). ~270 postings takes 15-20 minutes. Leave
+   the window alone until it finishes.
+7. If Banner logs you out anyway, it pauses and tells you. In the browser, go
+   to connect.drexel.edu > BannerWeb > co-op job search until you can see a
+   job again, then press ENTER. It retries and slows itself down further.
 
 ## 3) The output
 
@@ -44,9 +47,11 @@ Everything lands in `coop_output/`:
 
 - **`coop_output/jobs.csv`**: open it in Excel or Google Sheets. One row per
   posting, sorted so likely part-time jobs come first:
-  - `part_time`: `yes` (says part-time, never full-time), `maybe` (mentions
-    both, or lists under 30 hours/week), or `no`
-  - `hours_found`: any "N hours per week" numbers it spotted
+  - `part_time`: `yes`, `maybe` or `no`. It goes by the posting's
+    "Approximate Hours Per Week" field (`yes` if under 30); postings without
+    that field fall back to looking for "part-time" wording.
+  - `listed_hours_per_week`: that field's value
+  - `hours_found`: any "N hours per week" numbers in the description text
   - `snippets`: the text around each "part-time" mention, so you can check it
   - `url`: link to the posting (opens while you're logged in)
 - **`coop_output/jobs/`**: the full text of each posting, one file each.
@@ -61,7 +66,7 @@ Check the `maybe` rows by hand: the script only looks for words like
 ```bash
 python coop_parttime.py --max-hours 25            # stricter hours cutoff (default 30)
 python coop_parttime.py --link-pattern JobDetail  # skip the link-guessing step
-python coop_parttime.py --delay 1                 # slower, gentler on the server
+python coop_parttime.py --delay 5                 # slower if you keep getting logged out (default 3)
 ```
 
 Running it again is fast: postings already saved in `coop_output/jobs/` are

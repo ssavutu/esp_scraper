@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import random
 import re
 import sys
 import time
@@ -44,6 +45,11 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 START_URL = "https://connect.drexel.edu"
 PROFILE_DIR = ".coop_browser_profile"
 LOGIN_MARKERS = ("microsoftonline.com", "/idp/", "login", "signin", "cas/")
+# Every real Banner co-op posting ("Job View") has these. When the session is
+# dropped, Banner serves its "User Login" page at the posting's own URL, so the
+# URL alone can't tell us we've been logged out.
+POSTING_MARKERS = ("Job View", "Employer:")
+LISTED_HOURS_RE = re.compile(r"Approximate Hours Per Week:\s*(\d+(?:\.\d+)?)", re.I)
 
 PART_TIME_RE = re.compile(r"\bpart[\s-]?time\b", re.I)
 FULL_TIME_RE = re.compile(r"\bfull[\s-]?time\b", re.I)
@@ -160,16 +166,26 @@ def collect_all_postings(page: Page, regex: re.Pattern) -> List[Dict[str, str]]:
     return list(seen.values())
 
 
-def looks_like_login(url: str) -> bool:
-    return any(marker in url.lower() for marker in LOGIN_MARKERS)
+def is_posting(url: str, text: str) -> bool:
+    if any(marker in url.lower() for marker in LOGIN_MARKERS):
+        return False
+    return all(marker in text for marker in POSTING_MARKERS)
 
 
-def fetch_posting_text(page: Page, url: str) -> str:
+def fetch_posting_text(page: Page, url: str, pacing: Dict[str, float]) -> str:
     while True:
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        if not looks_like_login(page.url):
-            return page.inner_text("body")
-        input("\nLooks like the session expired. Log in again in the browser, then press ENTER...")
+        text = page.inner_text("body")
+        if is_posting(page.url, text):
+            return text
+        # Banner drops the session when requests come too fast, so slow down
+        # for the rest of the run before retrying.
+        pacing["delay"] *= 2
+        input(
+            "\nGot a login/logout page instead of a job posting, so the session was dropped.\n"
+            "In the browser: go to connect.drexel.edu, open BannerWeb, and open the co-op job\n"
+            f"search until you can see a job again. Then press ENTER (slowing to {pacing['delay']:.0f}s/posting)..."
+        )
 
 
 def classify(text: str, max_hours: int) -> Dict[str, Any]:
@@ -182,8 +198,18 @@ def classify(text: str, max_hours: int) -> Dict[str, Any]:
     part_time_hits = [snippet(text, m.start()) for m in PART_TIME_RE.finditer(text)]
     full_time = bool(FULL_TIME_RE.search(text))
     low_hours = bool(hours) and max(hours) < max_hours
+    listed = LISTED_HOURS_RE.search(text)
+    listed_hours = float(listed.group(1)) if listed else None
 
-    if part_time_hits and not full_time:
+    # The posting's own "Approximate Hours Per Week" field beats keyword guessing.
+    if listed_hours is not None:
+        if listed_hours < max_hours:
+            verdict = "yes"
+        elif part_time_hits or low_hours:
+            verdict = "maybe"
+        else:
+            verdict = "no"
+    elif part_time_hits and not full_time:
         verdict = "yes"
     elif part_time_hits or low_hours:
         verdict = "maybe"
@@ -192,6 +218,7 @@ def classify(text: str, max_hours: int) -> Dict[str, Any]:
 
     return {
         "part_time": verdict,
+        "listed_hours_per_week": "" if listed_hours is None else f"{listed_hours:g}",
         "mentions_part_time": bool(part_time_hits),
         "mentions_full_time": full_time,
         "hours_found": ", ".join(str(h) for h in sorted(set(hours))),
@@ -217,7 +244,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Flag part-time Drexel co-op postings")
     parser.add_argument("--link-pattern", help="Regex matching posting URLs (skips auto-detect)")
     parser.add_argument("--max-hours", type=int, default=30, help="Hours/week below this count as part-time")
-    parser.add_argument("--delay", type=float, default=0.5, help="Seconds to wait between postings")
+    parser.add_argument("--delay", type=float, default=3.0,
+                        help="Seconds between postings (Banner logs you out if this is too low)")
     parser.add_argument("--out-dir", default="coop_output", help="Where to write jobs.csv and cached text")
     parser.add_argument("--chromium", help="Path to a Chromium/Chrome binary (default: Playwright's)")
     args = parser.parse_args()
@@ -244,20 +272,21 @@ def main() -> int:
             return 1
 
         detail_page = context.new_page()
+        pacing = {"delay": args.delay}
         rows: List[Dict[str, Any]] = []
         for i, posting in enumerate(postings, 1):
             url = posting["href"]
             cache = cache_dir / f"{hashlib.sha1(url.encode()).hexdigest()[:16]}.txt"
-            if cache.exists():
-                text = cache.read_text(encoding="utf-8")
-            else:
+            text = cache.read_text(encoding="utf-8") if cache.exists() else ""
+            # Re-fetch cached login pages saved by earlier runs.
+            if not is_posting(url, text):
                 try:
-                    text = fetch_posting_text(detail_page, url)
+                    text = fetch_posting_text(detail_page, url, pacing)
                 except Exception as exc:  # one bad posting shouldn't kill a long run
                     print(f"  [{i}/{len(postings)}] failed: {url} ({exc})", file=sys.stderr)
                     continue
                 cache.write_text(f"{url}\n\n{text}", encoding="utf-8")
-                time.sleep(args.delay)
+                time.sleep(pacing["delay"] * random.uniform(1.0, 1.5))
 
             # The results-table row often has hours/type columns too, so check both.
             info = classify(posting["rowText"] + "\n" + text, args.max_hours)
