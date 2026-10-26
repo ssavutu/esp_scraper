@@ -8,6 +8,8 @@ __pycache__/
 # Local session/output artifacts
 cookies.json
 firecrawl_output/
+coop_output/
+.coop_browser_profile/
 
 # Local tool metadata
 .codex
